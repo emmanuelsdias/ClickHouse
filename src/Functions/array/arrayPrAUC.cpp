@@ -78,8 +78,14 @@ public:
     static FunctionPtr create(ContextPtr) { return std::make_shared<FunctionArrayPrAUC>(); }
 
 private:
-    static Float64
-    apply(const IColumn & scores, const IColumn & labels, ColumnArray::Offset current_offset, ColumnArray::Offset next_offset)
+    static Float64 apply(
+        const IColumn & scores,
+        const IColumn & labels,
+        ColumnArray::Offset current_offset,
+        ColumnArray::Offset next_offset,
+        size_t higher_quantiles_tp = 0,
+        size_t higher_quantiles_total = 0,
+        size_t overall_tp = 0)
     {
         struct ScoreLabel
         {
@@ -100,11 +106,13 @@ private:
         /// Sorting scores in descending order to traverse the Precision Recall curve from left to right
         std::sort(sorted_labels.begin(), sorted_labels.end(), [](const auto & lhs, const auto & rhs) { return lhs.score > rhs.score; });
 
-        size_t prev_tp = 0, curr_tp = 0;
-        size_t curr_p = 0;
+        /// If the PR AUC is being calculated distributedly, we need to know how many true positives (tp) there are on higher score partitions
+        /// Also, we need to know total number of labels from higher score partitions, since they are all predicted as positive (p) due to score > threshold
+        size_t prev_tp = higher_quantiles_tp, curr_tp = higher_quantiles_tp;
+        size_t curr_p = higher_quantiles_total;
 
         Float64 prev_score = sorted_labels[0].score;
-        Float64 curr_precision = 1.0;
+        Float64 curr_precision = curr_p > 0 ? static_cast<Float64>(curr_tp) / curr_p : 1.0;
 
         Float64 area = 0.0;
 
@@ -137,11 +145,14 @@ private:
         curr_precision = curr_p > 0 ? static_cast<Float64>(curr_tp) / curr_p : 1.0;
         area += curr_precision * (curr_tp - prev_tp);
 
-        /// If there were no positive labels, Recall did not change and the area is 0
-        if (curr_tp == 0)
+        /// If there were no new positive labels, Recall did not change and the area is 0
+        if (curr_tp == higher_quantiles_tp)
             return 0.0;
         /// Finally, we divide by (TP + FN) to obtain the Recall
-        /// At this point we've traversed the whole curve and curr_tp = total positive labels (TP + FN)
+        /// If the PR AUC is being calculated distributedly, the total positive labels is passed as an argument
+        if (overall_tp > 0)
+            return area / overall_tp;
+        /// Else, we've traversed the whole curve and curr_tp = total positive labels (TP + FN)
         return area / curr_tp;
     }
 
